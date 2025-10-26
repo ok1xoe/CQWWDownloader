@@ -20,7 +20,7 @@ A high-performance Java application for downloading CQWW contest log files using
 
 ## Build
 
-bash mvn clean package
+`bash mvn clean package`
 
 
 
