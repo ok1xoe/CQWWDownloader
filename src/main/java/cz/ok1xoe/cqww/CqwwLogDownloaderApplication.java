@@ -19,13 +19,25 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 
 @SpringBootApplication
 @Slf4j
@@ -33,7 +45,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
 
     private static final String DEFAULT_URL = "https://cqww.com/publiclogs/2024ph/";
     private static final String INDEX_URL = "https://cqww.com/publiclogs/";
-    private static final Pattern YEAR_PATTERN = Pattern.compile("(\\d{4})(ph|cw)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern YEAR_PATTERN = Pattern.compile("(\\d{4})(ph|cw|rtty)", Pattern.CASE_INSENSITIVE);
 
     public static void main(String[] args) {
         SpringApplication.run(CqwwLogDownloaderApplication.class, args);
@@ -41,6 +53,18 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
 
     @Override
     public void run(ApplicationArguments args) {
+        // Targeted režimy podle kombinací:
+        // A) --call -> stáhne pro danou značku všechny roky a módy (dle indexu)
+        // B) --call + --year -> stáhne pro daný rok CW i SSB
+        // C) --call + --mode -> stáhne pro daný mód všechny roky
+        // D) --call + --year + --mode -> stáhne jen jeden konkrétní log
+        // Ostatní kombinace jsou zakázané.
+        if (args.containsOption("call") || args.containsOption("year") || args.containsOption("mode")) {
+            runTargetedDownload(args);
+            return;
+        }
+
+        // Původní funkcionalita (beze změn): stahování podle URL / indexu
         final String url = args.containsOption("url") ? args.getOptionValues("url").get(0) : DEFAULT_URL;
         Path outDir = args.containsOption("out")
                 ? Path.of(args.getOptionValues("out").get(0))
@@ -54,7 +78,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
                 : 3;
 
         final String overwriteMode = args.containsOption("overwrite")
-                ? args.getOptionValues("overwrite").get(0).toLowerCase()
+                ? args.getOptionValues("overwrite").get(0).toLowerCase(Locale.ROOT)
                 : "replace";
 
         if (!overwriteMode.equals("skip") && !overwriteMode.equals("new") && !overwriteMode.equals("replace")) {
@@ -109,6 +133,343 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
         }
     }
 
+    private void runTargetedDownload(ApplicationArguments args) {
+        boolean hasCall = args.containsOption("call");
+        boolean hasYear = args.containsOption("year");
+        boolean hasMode = args.containsOption("mode");
+
+        // Povolené kombinace:
+        // call
+        // call+year
+        // call+mode
+        // call+year+mode
+        boolean allowed = hasCall && (!hasYear || hasYear) && (!hasMode || hasMode)
+                && !(!hasCall && (hasYear || hasMode));
+        allowed = hasCall && (
+                (!hasYear && !hasMode) ||
+                        (hasYear && !hasMode) ||
+                        (!hasYear && hasMode) ||
+                        (hasYear && hasMode)
+        );
+
+        if (!allowed) {
+            log.error("Invalid parameter combination. Allowed:");
+            log.error("  --call");
+            log.error("  --call + --year");
+            log.error("  --call + --mode");
+            log.error("  --call + --year + --mode");
+            return;
+        }
+
+        String call = getSingleOption(args, "call").orElse("").trim();
+        String year = getSingleOption(args, "year").orElse("").trim();
+        String modeRaw = getSingleOption(args, "mode").orElse("").trim();
+
+        if (call.isBlank()) {
+            log.error("Parameter --call is required.");
+            return;
+        }
+        String callNorm = call.toUpperCase(Locale.ROOT);
+
+        if (hasYear && !year.matches("\\d{4}")) {
+            log.error("Invalid --year value: {} (expected 4 digits, e.g. 2020)", year);
+            return;
+        }
+
+        final Mode selectedMode;
+        if (hasMode) {
+            try {
+                selectedMode = Mode.parse(modeRaw);
+            } catch (IllegalArgumentException ex) {
+                log.error("Invalid --mode value: {} (allowed: CW, SSB, RTTY; PH accepted as alias for SSB)", modeRaw);
+                return;
+            }
+        } else {
+            selectedMode = null;
+        }
+
+        Path outDir = args.containsOption("out")
+                ? Path.of(args.getOptionValues("out").get(0))
+                : Path.of(System.getProperty("user.dir"));
+
+        final int maxRetries = args.containsOption("retries")
+                ? Math.max(0, parseIntSafe(args.getOptionValues("retries").get(0), 3))
+                : 3;
+
+        final String overwriteMode = args.containsOption("overwrite")
+                ? args.getOptionValues("overwrite").get(0).toLowerCase(Locale.ROOT)
+                : "replace";
+
+        if (!overwriteMode.equals("skip") && !overwriteMode.equals("new") && !overwriteMode.equals("replace")) {
+            log.error("Invalid --overwrite value: {}. Allowed values: skip, new, replace", overwriteMode);
+            return;
+        }
+
+        try {
+            if (!Files.exists(outDir)) Files.createDirectories(outDir);
+            if (!Files.isDirectory(outDir)) {
+                log.error("Target path is not a directory: {}", outDir);
+                return;
+            }
+            if (!Files.isWritable(outDir)) {
+                log.error("Target directory is not writable: {}", outDir);
+                return;
+            }
+        } catch (AccessDeniedException e) {
+            log.error("Access denied: {}", outDir, e);
+            return;
+        } catch (IOException e) {
+            log.error("Cannot prepare target directory: {}", outDir, e);
+            return;
+        } catch (SecurityException e) {
+            log.error("Security restriction while accessing directory: {}", outDir, e);
+            return;
+        }
+
+        AtomicLong totalBytes = new AtomicLong(0);
+        AtomicInteger ok = new AtomicInteger(0);
+        AtomicInteger failed = new AtomicInteger(0);
+        AtomicInteger skipped = new AtomicInteger(0);
+
+        // D) call + year + mode => konkrétní log
+        if (hasYear && hasMode) {
+            String yearUrl = buildYearUrl(year, selectedMode);
+            downloadOne(callNorm, yearUrl, year, selectedMode, outDir, maxRetries, overwriteMode, totalBytes, ok, failed, skipped);
+
+            log.info("DONE | successful: {} skipped: {} failed: {} total: {}B",
+                    ok.get(), skipped.get(), failed.get(), totalBytes.get());
+            return;
+        }
+
+        // B) call + year => CW i SSB pro rok
+        if (hasYear) {
+            for (Mode m : List.of(Mode.CW, Mode.SSB)) {
+                String yearUrl = buildYearUrl(year, m);
+                downloadOne(callNorm, yearUrl, year, m, outDir, maxRetries, overwriteMode, totalBytes, ok, failed, skipped);
+            }
+
+            log.info("DONE | successful: {} skipped: {} failed: {} total: {}B",
+                    ok.get(), skipped.get(), failed.get(), totalBytes.get());
+            return;
+        }
+
+        // C) call + mode => všechny roky pro mód
+        if (hasMode) {
+            List<YearInfo> all = discoverYearLinksFromIndex(INDEX_URL);
+            List<YearInfo> filtered = all.stream()
+                    .filter(i -> i.mode.equalsIgnoreCase(selectedMode.displayName))
+                    .sorted(Comparator.comparing(i -> i.year))
+                    .toList();
+
+            if (filtered.isEmpty()) {
+                log.warn("No years found for mode={}", selectedMode.displayName);
+                return;
+            }
+
+            for (YearInfo info : filtered) {
+                downloadOne(callNorm, ensureTrailingSlash(info.url), info.year, selectedMode, outDir, maxRetries, overwriteMode, totalBytes, ok, failed, skipped);
+            }
+
+            log.info("DONE | successful: {} skipped: {} failed: {} total: {}B",
+                    ok.get(), skipped.get(), failed.get(), totalBytes.get());
+            return;
+        }
+
+        // A) call => všechny roky a módy (dle indexu)
+        List<YearInfo> all = discoverYearLinksFromIndex(INDEX_URL);
+        List<YearInfo> sorted = all.stream()
+                .sorted(Comparator.comparing((YearInfo i) -> i.year).thenComparing(i -> i.mode))
+                .toList();
+
+        if (sorted.isEmpty()) {
+            log.warn("No year categories found on index page: {}", INDEX_URL);
+            return;
+        }
+
+        for (YearInfo info : sorted) {
+            Mode m;
+            try {
+                // info.mode je "CW"/"SSB"/"RTTY"
+                m = Mode.parse(info.mode);
+            } catch (IllegalArgumentException ex) {
+                // Kdyby web někdy přidal jiný suffix, raději jen přeskočíme.
+                log.warn("Skipping unsupported mode from index: {}", info.mode);
+                continue;
+            }
+            downloadOne(callNorm, ensureTrailingSlash(info.url), info.year, m, outDir, maxRetries, overwriteMode, totalBytes, ok, failed, skipped);
+        }
+
+        log.info("DONE | successful: {} skipped: {} failed: {} total: {}B",
+                ok.get(), skipped.get(), failed.get(), totalBytes.get());
+    }
+
+    private void downloadOne(
+            String callNorm,
+            String yearUrl,
+            String year,
+            Mode mode,
+            Path outDir,
+            int maxRetries,
+            String overwriteMode,
+            AtomicLong totalBytes,
+            AtomicInteger ok,
+            AtomicInteger failed,
+            AtomicInteger skipped
+    ) {
+        log.info("Searching log | call={} url={}", callNorm, yearUrl);
+
+        URI logUri;
+        try {
+            logUri = findLogUriForCall(yearUrl, callNorm);
+        } catch (IOException e) {
+            log.error("Cannot load/parse page: {}", yearUrl, e);
+            failed.incrementAndGet();
+            return;
+        }
+
+        if (logUri == null) {
+            log.warn("Not found | call={} url={}", callNorm, yearUrl);
+            return;
+        }
+
+        String forcedFileName = buildForcedFileName(year, mode, callNorm);
+
+        try {
+            new DownloadTask(logUri, outDir, maxRetries, overwriteMode, forcedFileName, totalBytes, ok, failed, skipped).call();
+        } catch (Exception e) {
+            log.error("Unexpected error during download: {}", logUri, e);
+            failed.incrementAndGet();
+        }
+    }
+
+    private String buildForcedFileName(String year, Mode mode, String callNorm) {
+        // Formát: RRRR_MODE_CALL.log
+        // MODE bude CW, SSB, RTTY
+        return year + "_" + mode.displayName + "_" + callNorm + ".log";
+    }
+
+    private String buildYearUrl(String year, Mode mode) {
+        // veřejné URL: {year}cw / {year}ph / (pokud existuje) {year}rtty
+        return INDEX_URL + year + mode.urlSuffix + "/";
+    }
+
+    private String ensureTrailingSlash(String url) {
+        if (url == null) return "";
+        return url.endsWith("/") ? url : (url + "/");
+    }
+
+    private Optional<String> getSingleOption(ApplicationArguments args, String name) {
+        if (!args.containsOption(name)) return Optional.empty();
+        List<String> values = args.getOptionValues(name);
+        if (values == null || values.isEmpty()) return Optional.empty();
+        return Optional.ofNullable(values.get(0));
+    }
+
+    private URI findLogUriForCall(String yearUrl, String callNorm) throws IOException {
+        final Document doc = Jsoup.connect(yearUrl)
+                .userAgent("CQWW-Log-Downloader/2.1 (+Java 21 Virtual Threads; SpringBoot)")
+                .timeout(20_000)
+                .get();
+
+        Elements links = doc.select("a[href]");
+        Pattern p = Pattern.compile("(?i)^" + Pattern.quote(callNorm) + "([._-].*)?\\.log$");
+
+        URI best = null;
+        int bestLen = Integer.MAX_VALUE;
+
+        for (Element a : links) {
+            String abs = a.attr("abs:href");
+            if (abs == null || abs.isBlank()) continue;
+            if (!abs.toLowerCase(Locale.ROOT).endsWith(".log")) continue;
+
+            URI uri;
+            try {
+                uri = new URI(abs);
+            } catch (URISyntaxException ex) {
+                continue;
+            }
+
+            String fileName = Path.of(uri.getPath()).getFileName().toString();
+            if (!p.matcher(fileName).matches()) continue;
+
+            // Pokud by existovalo víc variant, vezmeme "nejkratší" (typicky OK1K.LOG vs OK1K_foo.LOG)
+            if (fileName.length() < bestLen) {
+                best = uri;
+                bestLen = fileName.length();
+            }
+        }
+        return best;
+    }
+
+    private List<YearInfo> discoverYearLinksFromIndex(String indexUrl) {
+        final Document doc;
+        try {
+            doc = Jsoup.connect(indexUrl)
+                    .userAgent("CQWW-Log-Downloader/2.1 (+Java 21 Virtual Threads; SpringBoot)")
+                    .timeout(20_000)
+                    .get();
+        } catch (IOException e) {
+            log.error("IO error while loading index page: {}", e.getMessage(), e);
+            return List.of();
+        }
+
+        Map<String, YearInfo> yearLinks = new LinkedHashMap<>();
+        try {
+            Elements links = doc.select("a[href]");
+            for (Element a : links) {
+                String href = a.attr("href");
+                if (href == null || href.isBlank()) continue;
+
+                Matcher m = YEAR_PATTERN.matcher(href);
+                if (m.find()) {
+                    String year = m.group(1);
+                    String mode = m.group(2).toLowerCase(Locale.ROOT);
+                    String fullUrl = a.attr("abs:href");
+
+                    String key = year + mode;
+                    if (!yearLinks.containsKey(key)) {
+                        YearInfo info = new YearInfo();
+                        info.year = year;
+                        info.mode = mode.equalsIgnoreCase("ph") ? "SSB" : mode.toUpperCase(Locale.ROOT);
+                        info.url = fullUrl;
+                        info.dirName = year + "_CQWW" + info.mode + "_LOGS";
+                        yearLinks.put(key, info);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error while parsing year links.", e);
+            return List.of();
+        }
+
+        return new ArrayList<>(yearLinks.values());
+    }
+
+    private enum Mode {
+        CW("CW", "cw"),
+        SSB("SSB", "ph"),
+        RTTY("RTTY", "rtty");
+
+        final String displayName;
+        final String urlSuffix;
+
+        Mode(String displayName, String urlSuffix) {
+            this.displayName = displayName;
+            this.urlSuffix = urlSuffix;
+        }
+
+        static Mode parse(String mode) {
+            if (mode == null) throw new IllegalArgumentException("mode is null");
+            String m = mode.trim().toUpperCase(Locale.ROOT);
+            return switch (m) {
+                case "CW" -> CW;
+                case "SSB", "PH" -> SSB;
+                case "RTTY" -> RTTY;
+                default -> throw new IllegalArgumentException("Unsupported mode: " + mode);
+            };
+        }
+    }
+
     /**
      * Process index page with all years
      */
@@ -135,14 +496,14 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
                 Matcher m = YEAR_PATTERN.matcher(href);
                 if (m.find()) {
                     String year = m.group(1);
-                    String mode = m.group(2).toLowerCase();
+                    String mode = m.group(2).toLowerCase(Locale.ROOT);
                     String fullUrl = a.attr("abs:href");
-                    
+
                     String key = year + mode;
                     if (!yearLinks.containsKey(key)) {
                         YearInfo info = new YearInfo();
                         info.year = year;
-                        info.mode = mode.equalsIgnoreCase("ph") ? "SSB" : "CW";
+                        info.mode = mode.equalsIgnoreCase("ph") ? "SSB" : mode.toUpperCase(Locale.ROOT);
                         info.url = fullUrl;
                         info.dirName = year + "_CQWW" + info.mode + "_LOGS";
                         yearLinks.put(key, info);
@@ -166,7 +527,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
             log.info("═══════════════════════════════════════════════════════════");
             log.info("Starting download: {} {} to directory: {}", info.year, info.mode, info.dirName);
             log.info("═══════════════════════════════════════════════════════════");
-            
+
             Path yearOutDir = baseOutDir.resolve(info.dirName);
             try {
                 if (!Files.exists(yearOutDir)) {
@@ -218,7 +579,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
             for (Element a : links) {
                 String abs = a.attr("abs:href");
                 if (abs == null || abs.isBlank()) continue;
-                String lower = abs.toLowerCase();
+                String lower = abs.toLowerCase(Locale.ROOT);
                 if (!lower.endsWith(".log")) continue;
                 try {
                     uris.add(new URI(abs));
@@ -289,7 +650,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
      */
     static class YearInfo {
         String year;
-        String mode;  // "SSB" or "CW"
+        String mode;  // "SSB" or "CW" or "RTTY"
         String url;
         String dirName;
     }
@@ -300,6 +661,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
         private final Path outDir;
         private final int maxRetries;
         private final String overwriteMode;
+        private final String forcedFileName;
         private final AtomicLong totalBytes;
         private final AtomicInteger ok, failed, skipped;
 
@@ -311,10 +673,16 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
 
         DownloadTask(URI uri, Path outDir, int maxRetries, String overwriteMode,
                      AtomicLong totalBytes, AtomicInteger ok, AtomicInteger failed, AtomicInteger skipped) {
+            this(uri, outDir, maxRetries, overwriteMode, null, totalBytes, ok, failed, skipped);
+        }
+
+        DownloadTask(URI uri, Path outDir, int maxRetries, String overwriteMode, String forcedFileName,
+                     AtomicLong totalBytes, AtomicInteger ok, AtomicInteger failed, AtomicInteger skipped) {
             this.uri = uri;
             this.outDir = outDir;
             this.maxRetries = maxRetries;
             this.overwriteMode = overwriteMode;
+            this.forcedFileName = forcedFileName;
             this.totalBytes = totalBytes;
             this.ok = ok;
             this.failed = failed;
@@ -325,7 +693,9 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
         public Void call() {
             String cid = java.util.UUID.randomUUID().toString().substring(0, 8);
             org.slf4j.MDC.put("cid", "[" + cid + "]");
-            String fileName = Path.of(uri.getPath()).getFileName().toString();
+
+            String originalFileName = Path.of(uri.getPath()).getFileName().toString();
+            String fileName = (forcedFileName != null && !forcedFileName.isBlank()) ? forcedFileName : originalFileName;
 
             try {
                 Path targetPath = outDir.resolve(fileName);
