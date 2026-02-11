@@ -1,4 +1,4 @@
-# CQ WW/WPX Log Downloader
+# CQWW Log Downloader
 
 A high-performance Java application for downloading CQWW contest log files using Java 21 Virtual Threads and Spring Boot.
 
