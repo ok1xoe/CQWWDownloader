@@ -48,6 +48,15 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
     private static final Pattern YEAR_PATTERN = Pattern.compile("(\\d{4})(ph|cw|rtty)", Pattern.CASE_INSENSITIVE);
 
     public static void main(String[] args) {
+        // GUI režim: spustí JavaFX a nespouští Spring Boot CLI runner
+        if (args != null) {
+            for (String a : args) {
+                if ("--gui".equalsIgnoreCase(a.trim())) {
+                    CqwwLogDownloaderGuiApp.launchApp(args);
+                    return;
+                }
+            }
+        }
         SpringApplication.run(CqwwLogDownloaderApplication.class, args);
     }
 
@@ -143,9 +152,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
         // call+year
         // call+mode
         // call+year+mode
-        boolean allowed = hasCall && (!hasYear || hasYear) && (!hasMode || hasMode)
-                && !(!hasCall && (hasYear || hasMode));
-        allowed = hasCall && (
+        boolean allowed = hasCall && (
                 (!hasYear && !hasMode) ||
                         (hasYear && !hasMode) ||
                         (!hasYear && hasMode) ||
@@ -289,10 +296,8 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
         for (YearInfo info : sorted) {
             Mode m;
             try {
-                // info.mode je "CW"/"SSB"/"RTTY"
-                m = Mode.parse(info.mode);
+                m = Mode.parse(info.mode); // "CW"/"SSB"/"RTTY"
             } catch (IllegalArgumentException ex) {
-                // Kdyby web někdy přidal jiný suffix, raději jen přeskočíme.
                 log.warn("Skipping unsupported mode from index: {}", info.mode);
                 continue;
             }
@@ -344,7 +349,6 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
 
     private String buildForcedFileName(String year, Mode mode, String callNorm) {
         // Formát: RRRR_MODE_CALL.log
-        // MODE bude CW, SSB, RTTY
         return year + "_" + mode.displayName + "_" + callNorm + ".log";
     }
 
@@ -423,14 +427,19 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
                 Matcher m = YEAR_PATTERN.matcher(href);
                 if (m.find()) {
                     String year = m.group(1);
-                    String mode = m.group(2).toLowerCase(Locale.ROOT);
+                    String modeSuffix = m.group(2).toLowerCase(Locale.ROOT);
                     String fullUrl = a.attr("abs:href");
 
-                    String key = year + mode;
+                    String key = year + modeSuffix;
                     if (!yearLinks.containsKey(key)) {
                         YearInfo info = new YearInfo();
                         info.year = year;
-                        info.mode = mode.equalsIgnoreCase("ph") ? "SSB" : mode.toUpperCase(Locale.ROOT);
+                        info.mode = switch (modeSuffix) {
+                            case "ph" -> "SSB";
+                            case "cw" -> "CW";
+                            case "rtty" -> "RTTY";
+                            default -> modeSuffix.toUpperCase(Locale.ROOT);
+                        };
                         info.url = fullUrl;
                         info.dirName = year + "_CQWW" + info.mode + "_LOGS";
                         yearLinks.put(key, info);
@@ -496,14 +505,19 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
                 Matcher m = YEAR_PATTERN.matcher(href);
                 if (m.find()) {
                     String year = m.group(1);
-                    String mode = m.group(2).toLowerCase(Locale.ROOT);
+                    String modeSuffix = m.group(2).toLowerCase(Locale.ROOT);
                     String fullUrl = a.attr("abs:href");
 
-                    String key = year + mode;
+                    String key = year + modeSuffix;
                     if (!yearLinks.containsKey(key)) {
                         YearInfo info = new YearInfo();
                         info.year = year;
-                        info.mode = mode.equalsIgnoreCase("ph") ? "SSB" : mode.toUpperCase(Locale.ROOT);
+                        info.mode = switch (modeSuffix) {
+                            case "ph" -> "SSB";
+                            case "cw" -> "CW";
+                            case "rtty" -> "RTTY";
+                            default -> modeSuffix.toUpperCase(Locale.ROOT);
+                        };
                         info.url = fullUrl;
                         info.dirName = year + "_CQWW" + info.mode + "_LOGS";
                         yearLinks.put(key, info);
