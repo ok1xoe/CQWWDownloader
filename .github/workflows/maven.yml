@@ -1,0 +1,38 @@
+name: Build (Maven, Java 21)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin) + Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build & test (Maven)
+        run: mvn -B -ntp verify
+
+      - name: Upload build artifacts (JAR)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jars
+          path: |
+            target/*.jar
+          if-no-files-found: warn
+
+      # Optional: Upload dependency graph for Dependabot alerts
+      - name: Update dependency graph
+        uses: advanced-security/maven-dependency-submission-action@v4
