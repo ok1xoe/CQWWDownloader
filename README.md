@@ -156,43 +156,24 @@ Examples:
 
 ### Download to specific directory
 
-`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar \
-  --url=https://cqww.com/publiclogs/ \
-  --out=/home/user/ham_radio/cqww_logs`
+`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar --url=https://cqww.com/publiclogs/ --out=/home/user/ham_radio/cqww_logs`
 
 ### Conservative download (prevent server overload)
 
-`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar \
-  --url=https://cqww.com/publiclogs/2024ph/ \
-  --maxConcurrent=10 \
-  --retries=5`
+`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar --url=https://cqww.com/publiclogs/2024ph/ --maxConcurrent=10 --retries=5`
 
 ### Skip existing files (resume interrupted download)
 
-`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar \
-  --url=https://cqww.com/publiclogs/ \
-  --overwrite=skip`
+`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar --url=https://cqww.com/publiclogs/ --overwrite=skip`
 
 ### Download with all parameters
 
-```shell script
-java -jar cqww-log-downloader-1.3.0-java21-virtual.jar \
-  --url=https://cqww.com/publiclogs/ \
-  --out=./cqww_logs \
-  --maxConcurrent=20 \
-  --retries=5 \
-  --overwrite=skip
-```
+`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar --url=https://cqww.com/publiclogs/ --out=./cqww_logs --maxConcurrent=20 --retries=5 --overwrite=skip`
 
 
 ### Windows example
 
-`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar ^
-  --url=https://cqww.com/publiclogs/ 
-  --out=C:\Users\YourName\Documents\CQWW 
-  --maxConcurrent=15 
-  --retries=3 
-  --overwrite=skip`
+`java -jar cqww-log-downloader-1.3.0-java21-virtual.jar --url=https://cqww.com/publiclogs/ --out=C:\Users\YourName\Documents\CQWW --maxConcurrent=15 --retries=3 --overwrite=skip`
 
 ## Output
 
@@ -306,12 +287,13 @@ This is an open-source project. Feel free to use and modify.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
+See the LICENSE file for details: COPYING
+Official text: https://www.gnu.org/licenses/gpl-3.0.en.html
 ## Author
 
 Created for ham radio contest log management and CQWW contest log downloads.
 
 ---
 
-**73!**
+**73! Tomas OK1XOE**
