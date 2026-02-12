@@ -48,15 +48,6 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
     private static final Pattern YEAR_PATTERN = Pattern.compile("(\\d{4})(ph|cw|rtty)", Pattern.CASE_INSENSITIVE);
 
     public static void main(String[] args) {
-        // GUI režim: spustí JavaFX a nespouští Spring Boot CLI runner
-        if (args != null) {
-            for (String a : args) {
-                if ("--gui".equalsIgnoreCase(a.trim())) {
-                    CqwwLogDownloaderGuiApp.launchApp(args);
-                    return;
-                }
-            }
-        }
         SpringApplication.run(CqwwLogDownloaderApplication.class, args);
     }
 
