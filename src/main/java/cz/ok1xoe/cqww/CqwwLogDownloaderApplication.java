@@ -43,7 +43,7 @@ import java.util.regex.Pattern;
 @Slf4j
 public class CqwwLogDownloaderApplication implements ApplicationRunner {
 
-    private static final String DEFAULT_URL = "https://cqww.com/publiclogs/2024ph/";
+    private static final String DEFAULT_URL = "https://cqww.com/publiclogs/2025ph/";
     private static final String INDEX_URL = "https://cqww.com/publiclogs/";
     private static final Pattern YEAR_PATTERN = Pattern.compile("(\\d{4})(ph|cw|rtty)", Pattern.CASE_INSENSITIVE);
 
