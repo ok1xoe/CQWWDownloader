@@ -291,6 +291,8 @@ This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
 See the LICENSE file for details: COPYING
 Official text: https://www.gnu.org/licenses/gpl-3.0.en.html
 ## Author
+Tomas Kaplan
+OK1XOE / OK1K
 
 Created for ham radio contest log management and CQWW contest log downloads.
 
