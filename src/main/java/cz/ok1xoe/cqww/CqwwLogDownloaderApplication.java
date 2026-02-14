@@ -65,7 +65,7 @@ public class CqwwLogDownloaderApplication implements ApplicationRunner {
         }
 
         // Původní funkcionalita (beze změn): stahování podle URL / indexu
-        final String url = args.containsOption("url") ? args.getOptionValues("url").get(0) : DEFAULT_URL;
+        final String url = args.containsOption("url") ? args.getOptionValues("url").getFirst() : DEFAULT_URL;
         Path outDir = args.containsOption("out")
                 ? Path.of(args.getOptionValues("out").get(0))
                 : Path.of(System.getProperty("user.dir"));
