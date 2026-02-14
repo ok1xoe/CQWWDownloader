@@ -27,6 +27,7 @@ jobs:
             runner: windows-latest
           - os: macos
             runner: macos-latest
+          # GitHub-hosted Fedora runner není; použijeme Fedora container na ubuntu runneru
           - os: fedora
             runner: ubuntu-latest
             container: fedora:40
@@ -35,20 +36,18 @@ jobs:
 
     env:
       APP_NAME: cqww-log-downloader
-      APP_VERSION: 1.0.0
-      JAR_PATH: target/${{ env.APP_NAME }}.jar
-      MAIN_CLASS: com.example.Main
       DIST_DIR: dist
+      # název třídy víme; package si vytáhneme automaticky ze zdrojáků
+      MAIN_CLASS_SIMPLE: CqwwLogDownloaderApplication
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Install base tools (Fedora)
         if: matrix.os == 'fedora'
         run: |
-          dnf -y update
-          dnf -y install git curl tar gzip
+          dnf -y install git curl tar gzip findutils grep
+
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up JDK 21 (Temurin) + Maven cache
         uses: actions/setup-java@v4
@@ -59,6 +58,48 @@ jobs:
 
       - name: Build & test (Maven)
         run: mvn -B -ntp verify
+
+      - name: Resolve project version (Maven)
+        shell: bash
+        run: |
+          VERSION="$(mvn -q -ntp help:evaluate -Dexpression=project.version -DforceStdout)"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Resolved APP_VERSION=$VERSION"
+
+      - name: Resolve main JAR file from target/
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          JAR="$(ls -1 target/*.jar 2>/dev/null | grep -vE '(-sources|-javadoc)\.jar$' | head -n 1 || true)"
+          if [ -z "$JAR" ]; then
+            echo "No runnable JAR found in target/. Build may not have produced a jar."
+            ls -la target || true
+            exit 1
+          fi
+          echo "JAR_FILE=$(basename "$JAR")" >> "$GITHUB_ENV"
+          echo "Resolved JAR_FILE=$(basename "$JAR")"
+
+      - name: Resolve MAIN_CLASS (detect package from sources)
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          FILE="$(grep -RIl --include='*.java' "class ${MAIN_CLASS_SIMPLE}" src/main/java | head -n 1 || true)"
+          if [ -z "$FILE" ]; then
+            echo "Cannot find Java file for class ${MAIN_CLASS_SIMPLE} under src/main/java."
+            exit 1
+          fi
+
+          PKG_LINE="$(grep -m 1 '^package ' "$FILE" || true)"
+          if [ -z "$PKG_LINE" ]; then
+            echo "No package declaration found in $FILE. (Default package is not recommended.)"
+            echo "MAIN_CLASS=${MAIN_CLASS_SIMPLE}" >> "$GITHUB_ENV"
+            echo "Resolved MAIN_CLASS=${MAIN_CLASS_SIMPLE}"
+            exit 0
+          fi
+
+          PKG="$(echo "$PKG_LINE" | sed -E 's/^package[[:space:]]+([^;]+);/\1/')"
+          echo "MAIN_CLASS=${PKG}.${MAIN_CLASS_SIMPLE}" >> "$GITHUB_ENV"
+          echo "Resolved MAIN_CLASS=${PKG}.${MAIN_CLASS_SIMPLE}"
 
       - name: Install packaging deps (Ubuntu)
         if: matrix.os == 'ubuntu'
@@ -71,8 +112,8 @@ jobs:
         run: |
           dnf -y install rpm-build
 
-      - name: Create DEB (Linux)
-        if: matrix.os == 'ubuntu' || matrix.os == 'fedora'
+      - name: Create DEB (Ubuntu)
+        if: matrix.os == 'ubuntu'
         shell: bash
         run: |
           mkdir -p "${DIST_DIR}"
@@ -81,12 +122,12 @@ jobs:
             --name "${APP_NAME}" \
             --app-version "${APP_VERSION}" \
             --input target \
-            --main-jar "$(basename "${JAR_PATH}")" \
+            --main-jar "${JAR_FILE}" \
             --main-class "${MAIN_CLASS}" \
             --dest "${DIST_DIR}"
 
-      - name: Create RPM (Linux)
-        if: matrix.os == 'ubuntu' || matrix.os == 'fedora'
+      - name: Create RPM (Fedora)
+        if: matrix.os == 'fedora'
         shell: bash
         run: |
           mkdir -p "${DIST_DIR}"
@@ -95,7 +136,7 @@ jobs:
             --name "${APP_NAME}" \
             --app-version "${APP_VERSION}" \
             --input target \
-            --main-jar "$(basename "${JAR_PATH}")" \
+            --main-jar "${JAR_FILE}" \
             --main-class "${MAIN_CLASS}" \
             --dest "${DIST_DIR}"
 
@@ -109,7 +150,7 @@ jobs:
             --name "${APP_NAME}" \
             --app-version "${APP_VERSION}" \
             --input target \
-            --main-jar "$(basename "${JAR_PATH}")" \
+            --main-jar "${JAR_FILE}" \
             --main-class "${MAIN_CLASS}" \
             --dest "${DIST_DIR}"
 
@@ -123,11 +164,12 @@ jobs:
             --name "${APP_NAME}" \
             --app-version "${APP_VERSION}" \
             --input target \
-            --main-jar "$(basename "${JAR_PATH}")" \
+            --main-jar "${JAR_FILE}" \
             --main-class "${MAIN_CLASS}" \
             --dest "${DIST_DIR}"
 
       - name: Upload installers
+        if: matrix.os != 'windows'
         uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
