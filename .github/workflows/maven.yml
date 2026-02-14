@@ -1,0 +1,75 @@
+name: Build (Maven, Java 21)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu
+            runner: ubuntu-latest
+          - os: windows
+            runner: windows-latest
+          - os: macos
+            runner: macos-latest
+          - os: fedora
+            runner: ubuntu-latest
+            container: fedora:40
+
+    container: ${{ matrix.container }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pro Fedora container je potřeba doinstalovat základní nástroje (git může chybět)
+      - name: Install dependencies (Fedora)
+        if: matrix.os == 'fedora'
+        run: |
+          dnf -y update
+          dnf -y install git curl tar gzip
+
+      - name: Set up JDK 21 (Temurin) + Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build & test (Maven)
+        run: mvn -B -ntp verify
+
+      - name: Upload build artifacts (JAR)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jars-${{ matrix.os }}
+          path: |
+            target/*.jar
+          if-no-files-found: warn
+
+  dependency-graph:
+    name: Dependency graph (once)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - run: mvn -B -ntp -DskipTests verify
+      - name: Update dependency graph
+        uses: advanced-security/maven-dependency-submission-action@v4
